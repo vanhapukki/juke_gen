@@ -1,0 +1,173 @@
+#!/usr/bin/bash
+
+# Finish script and add previous comments/reference links!
+
+## Script usage & syntax
+[[ -z $1 ]] && { echo -e "Usage:\n\t$0 x"; exit 0; }
+
+# status message
+echo -e "Initialising...."
+
+## Usage variables
+usage='Usage:'
+syntax=''
+
+## Array initialisation
+declare -a directory_prune_array
+declare -a x_dir_array
+declare -a file_exts_array
+declare -a prune_params
+declare -a find_params
+declare -a extensions_array
+declare -A b # Second answer: https://stackoverflow.com/questions/13648410/how-can-i-get-unique-values-from-an-array-in-bash
+declare -a audio_extensions_array
+declare -a pre_cull_song_array
+
+## Arrays
+directory_prune_array=()
+file_exts_array=()
+x_dir_array=()
+prune_params=()
+find_params=()
+extensions_array=()
+audio_extensions_array=()
+pre_cull_song_array=()
+
+## Path variables
+mother_load_path='/mnt/music_dir'
+dir_prune_list_path='/home/user/documents/jukebox'
+x_dir_files_path='/home/user/documents/jukebox'
+
+
+## Filename variables
+dir_prune_list='dir_prune_list'
+x_dir_files='song_prune_list'
+printf -v file_date '%(%Y%m%d_%H%M%S)T' -1
+play_file="jukebox_playlist_${file_date}.m3u"
+
+## Various variables
+conditional_audio_chk="*codec_type=audio*"
+
+# status message
+echo -e "Building directory prune list...."
+
+## Build array: prune directories
+readarray -t directory_prune_array < "$dir_prune_list_path/$dir_prune_list"
+
+## Build find "prune" params array
+for dir in "${directory_prune_array[@]}"
+do
+	# Need total number of array indices to prevent cruft
+	#+ params added to find
+	array_total=$(( ${#directory_prune_array[@]} - 1 ))
+
+	# Build find params
+	prune_params+=("-ipath") # http://www.liamdelahunty.com/tips/linux_find_exclude_multiple_directories.php
+
+	prune_params+=("*$dir*")
+
+	# Match last index in array to itself to avoid adding an additional -o to the find parameters
+	[[ "${directory_prune_array[$array_total]}" = $dir ]] && break # Do not || continue or it will skip this line in loop and add cruft
+	prune_params+=("-o")
+done
+
+## Build full find params array - See #1 re: prune - https://www.theunixschool.com/2012/07/find-command-15-examples-to-exclude.html
+find_params=("-type" "d" "(" "${prune_params[@]}" ")" "-prune" "-o")
+
+## Build array: ex_directory files
+readarray -t x_dir_array < "$x_dir_files_path/$x_dir_files"
+# Append prune list as well due to find function leaving them in file list
+x_dir_array+=(${directory_prune_array[@]})
+
+## Build array: file extensions
+readarray -t extensions_array < <( find "$mother_load_path" -type f )
+
+## Cull array: playable media file extensions
+# Cut to extension
+extensions_array=("${extensions_array[@]##*.}")
+
+# Remove cruft: non-extension paths
+path_cruft='/'
+
+for i in "${!extensions_array[@]}"
+do
+	[[ ${extensions_array[$i]} = *"$path_cruft"* ]] || [[ ${extensions_array[$i]} = *" "* ]] && { unset 'extensions_array[i]'; }
+done
+
+# Set all extensions to lower case
+extensions_array=("${extensions_array[@],,}") 
+
+# Sort array to unique - second answer: https://stackoverflow.com/questions/13648410/how-can-i-get-unique-values-from-an-array-in-bash
+for i in "${extensions_array[@]}"
+do
+	b["$i"]=1
+done
+
+# Set cull extension array: indices are set to extension strings -
+#+ keys are set to "1" hence "b" array is expanded on the indices. e.g. "!b"
+cull_extensions_array=("${!b[@]}") # https://mywiki.wooledge.org/BashGuide/Arrays 
+
+# status message
+echo -e "Building audio extensions list...."
+
+## Build array: find regex params - audio extensions
+## Cull non-audio extensions
+for file_ext in "${cull_extensions_array[@]}"
+#for file_ext in "${cull_extensions_array[@]}"
+do
+
+    ext_to_chk=$( find "$mother_load_path" -iname "*.$file_ext" -print -quit )
+
+    audio_codec_chk=$( ffprobe -v quiet -show_entries stream=codec_type -i "$ext_to_chk" )
+		audio_codec_chk="${audio_codec_chk,,}"
+
+    [[ $audio_codec_chk = $conditional_audio_chk  ]] && audio_extensions_array+=( "$file_ext" )
+
+done
+
+audio_extensions_array="${audio_extensions_array[*]}"
+audio_extensions_array="${audio_extensions_array// /|}"
+
+find_params+=( "-type" "f" "-regextype" "posix-extended" "-iregex" ".*\.($audio_extensions_array)" )
+
+# status message
+echo -e "Removing Ex-Directory files....\nThis may take some time...."
+
+## Build array: all media files according to find params
+readarray -t pre_cull_song_array < <(find "$mother_load_path" "${find_params[@]}")
+
+## Cull array: ex_directory files
+for x_file in "${x_dir_array[@]}"
+do
+
+  for pre_cull_file in "${!pre_cull_song_array[@]}"
+  do
+    [[ ${pre_cull_song_array[$pre_cull_file]} = *"$x_file" ]] && { unset 'pre_cull_song_array[pre_cull_file]'; }
+  done
+
+done
+
+# status message
+echo -e "Sorting file list...."
+
+## Create temp file of files and sort to unique
+# https://stackoverflow.com/questions/7442417/how-to-sort-an-array-in-bash
+IFS=$'\n' song_array=($( sort -R <<<"${pre_cull_song_array[*]}" ))
+
+unset IFS # If left set the random sort won't work - and best practise.
+
+# status message
+echo -e "Printing play list file...."
+
+for tune in "${song_array[@]}"
+do
+
+
+	printf "%s\n" "$tune" >> "$play_file"
+
+done
+
+# status message
+echo -e "Jukebox playlist successfully generated"
+
+exit 0
